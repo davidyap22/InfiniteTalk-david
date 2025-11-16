@@ -24,5 +24,6 @@ tokenizers>=0.20.3
 torchvision>=0.19.0
 transformers>=4.49.0
 tqdm
+requests>=2.32.0
 uvicorn[standard]>=0.30.0
 xfuser>=0.4.1
