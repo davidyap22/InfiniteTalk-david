@@ -9,6 +9,8 @@ from src.audio_analysis.torch_utils import linear_interpolation
 class Wav2Vec2Model(Wav2Vec2Model):
     def __init__(self, config: Wav2Vec2Config):
         super().__init__(config)
+        # `output_attentions=True` only works under eager attention implementation.
+        self.config.attn_implementation = "eager"
 
     def forward(
         self,
