@@ -362,6 +362,43 @@ def create_app(args):
     app.state.lock = asyncio.Lock()
     app.state.audio_cache_dir = audio_cache_dir
     app.state.output_dir = output_dir
+    app.state.jobs = {}
+    app.state.tasks = {}
+
+    async def _execute_generation(run_id, input_clip, sum_audio_path, run_dir,
+                                  inference_kwargs):
+        jobs = app.state.jobs
+        jobs[run_id]["status"] = "running"
+        jobs[run_id]["message"] = "Inference in progress"
+        try:
+            async with app.state.lock:
+                video_tensor = app.state.pipeline.generate_infinitetalk(
+                    input_clip,
+                    **inference_kwargs,
+                )
+            output_stub = run_dir / "result"
+            save_video_ffmpeg(
+                video_tensor,
+                str(output_stub),
+                [str(sum_audio_path)],
+                high_quality_save=False,
+            )
+            mp4_path = output_stub.with_suffix(".mp4")
+            download_url = f"/files/{run_id}/{mp4_path.name}"
+            jobs[run_id].update(
+                status="completed",
+                message="Generation completed",
+                video_path=str(mp4_path),
+                download_url=download_url,
+            )
+        except Exception as err:  # noqa: BLE001
+            logger.exception("Job %s failed", run_id)
+            jobs[run_id].update(
+                status="failed",
+                message=str(err),
+                video_path=None,
+                download_url=None,
+            )
 
     @app.get("/healthz")
     async def health_check():
@@ -373,6 +410,13 @@ def create_app(args):
         if not file_path.exists():
             raise HTTPException(status_code=404, detail="文件不存在")
         return FileResponse(file_path)
+
+    @app.get("/status/{run_id}")
+    async def query_status(run_id: str):
+        job = app.state.jobs.get(run_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="任务不存在")
+        return job
 
     @app.post("/generate")
     async def generate_video(
@@ -481,34 +525,32 @@ def create_app(args):
             extra_args=args,
         )
 
-        logger.info("开始生成: run_id=%s prompt=\"%s\"", run_id, prompt[:80])
-        async with app.state.lock:
-            try:
-                video_tensor = app.state.pipeline.generate_infinitetalk(
-                    input_clip,
-                    **inference_kwargs,
-                )
-            except Exception as err:  # noqa: BLE001
-                logger.exception("推理失败 run_id=%s", run_id)
-                raise HTTPException(status_code=500, detail=str(err)) from err
-
-        output_stub = run_dir / "result"
-        save_video_ffmpeg(
-            video_tensor,
-            str(output_stub),
-            [str(sum_audio_path)],
-            high_quality_save=False,
-        )
-        mp4_path = output_stub.with_suffix(".mp4")
-
-        response = {
-            "status": "completed",
+        jobs = app.state.jobs
+        jobs[run_id] = {
+            "status": "queued",
+            "message": "Job queued",
             "run_id": run_id,
-            "video_path": str(mp4_path),
-            "download_url": f"/files/{run_id}/{mp4_path.name}",
+            "video_path": None,
+            "download_url": None,
         }
-        logger.info("生成完成 run_id=%s 输出=%s", run_id, mp4_path)
-        return JSONResponse(response)
+        task = asyncio.create_task(
+            _execute_generation(
+                run_id,
+                input_clip,
+                sum_audio_path,
+                run_dir,
+                inference_kwargs,
+            )
+        )
+        app.state.tasks[run_id] = task
+
+        logger.info("任务排队: run_id=%s prompt=\"%s\"", run_id, prompt[:80])
+        return JSONResponse({
+            "status": "queued",
+            "run_id": run_id,
+            "status_url": f"/status/{run_id}",
+            "message": "Job queued. Poll /status/{run_id} for updates.",
+        })
 
     return app
 
@@ -521,4 +563,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
