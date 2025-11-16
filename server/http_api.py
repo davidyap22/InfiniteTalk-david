@@ -221,7 +221,7 @@ def _parse_args():
     parser.add_argument(
         "--server_port",
         type=int,
-        default=8888,
+        default=8890,
         help="HTTP 服务端口。")
     parser.add_argument(
         "--allow_origins",
