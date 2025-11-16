@@ -23,7 +23,6 @@ class Wav2Vec2Model(Wav2Vec2Model):
         return_dict=None,
     ):
         self.config.attn_implementation = "eager"
-        self.config.output_attentions = True
 
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -88,7 +87,6 @@ class Wav2Vec2Model(Wav2Vec2Model):
         return_dict=None,
     ):
         self.config.attn_implementation = "eager"
-        self.config.output_attentions = True
 
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -127,3 +125,4 @@ class Wav2Vec2Model(Wav2Vec2Model):
             hidden_states=encoder_outputs.hidden_states,
             attentions=encoder_outputs.attentions,
         )
+
