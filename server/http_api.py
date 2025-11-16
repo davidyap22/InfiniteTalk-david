@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 import uuid
+from urllib.parse import urlparse
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -281,6 +282,30 @@ async def _persist_upload(file: UploadFile, target_path: Path):
     return target_path
 
 
+def _download_from_url(url: str, target_path: Path, timeout: float = 30.0):
+    import requests
+
+    try:
+        with requests.get(url, stream=True, timeout=timeout) as response:
+            response.raise_for_status()
+            with open(target_path, "wb") as fp:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        fp.write(chunk)
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=400,
+                            detail=f"无法下载资源: {url}") from exc
+    return target_path
+
+
+def _filename_from_url(url: str, default_prefix: str, default_suffix: str):
+    parsed = urlparse(url)
+    name = Path(parsed.path).name
+    suffix = Path(name).suffix or default_suffix
+    stem = Path(name).stem or default_prefix
+    return stem, suffix
+
+
 def _prepare_single_audio(audio_path: Path, cache_dir: Path,
                           wav2vec_feature_extractor, audio_encoder):
     speech = audio_prepare_single(str(audio_path))
@@ -360,35 +385,59 @@ def create_app(args):
         audio_guide_scale: Optional[float] = Form(None),
         frame_num: Optional[int] = Form(None),
         motion_frame: Optional[int] = Form(None),
-        media: UploadFile = File(...),
-        audio: UploadFile = File(...),
+        media: UploadFile = File(None),
+        media_url: Optional[str] = Form(None),
+        audio: UploadFile = File(None),
+        audio_url: Optional[str] = Form(None),
         audio_secondary: UploadFile = File(None),
+        audio_secondary_url: Optional[str] = Form(None),
     ):
         args = app.state.args
         mode = inference_mode or args.mode
         if mode not in ("clip", "streaming"):
             raise HTTPException(status_code=400, detail="mode 仅支持 clip/streaming")
+        if media is None and not media_url:
+            raise HTTPException(status_code=400, detail="必须提供 media 文件或 media_url")
+        if audio is None and not audio_url:
+            raise HTTPException(status_code=400, detail="必须提供 audio 文件或 audio_url")
 
         run_stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         run_id = f"{run_stamp}_{uuid.uuid4().hex[:8]}"
         run_dir = app.state.output_dir / run_id
         run_dir.mkdir(parents=True, exist_ok=True)
 
-        media_suffix = Path(media.filename or "condition").suffix or ".bin"
-        media_path = run_dir / f"condition{media_suffix}"
-        await _persist_upload(media, media_path)
+        if media is not None:
+            media_suffix = Path(media.filename or "condition").suffix or ".bin"
+            media_path = run_dir / f"condition{media_suffix}"
+            await _persist_upload(media, media_path)
+        else:
+            stem, suffix = _filename_from_url(media_url, "condition", ".bin")
+            media_path = run_dir / f"{stem}{suffix}"
+            _download_from_url(media_url, media_path)
 
-        audio_name = Path(audio.filename or "audio.wav")
-        primary_audio_path = run_dir / f"audio{(audio_name.suffix or '.wav')}"
-        await _persist_upload(audio, primary_audio_path)
+        if audio is not None:
+            audio_name = Path(audio.filename or "audio.wav")
+            primary_audio_path = run_dir / f"audio{(audio_name.suffix or '.wav')}"
+            await _persist_upload(audio, primary_audio_path)
+        else:
+            stem, suffix = _filename_from_url(audio_url, "audio", ".wav")
+            primary_audio_path = run_dir / f"{stem}{suffix}"
+            _download_from_url(audio_url, primary_audio_path)
 
         cond_audio = {}
         sum_audio_path = None
 
+        secondary_path = None
         if audio_secondary is not None and audio_secondary.filename:
             secondary_name = Path(audio_secondary.filename)
             secondary_path = run_dir / f"audio_right{(secondary_name.suffix or '.wav')}"
             await _persist_upload(audio_secondary, secondary_path)
+        elif audio_secondary_url:
+            stem, suffix = _filename_from_url(audio_secondary_url, "audio_right", ".wav")
+            secondary_path = run_dir / f"{stem}{suffix}"
+            _download_from_url(audio_secondary_url, secondary_path)
+
+        if secondary_path is not None:
             left_emb, right_emb, sum_audio_path = _prepare_dual_audio(
                 primary_audio_path,
                 secondary_path,
@@ -472,3 +521,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
